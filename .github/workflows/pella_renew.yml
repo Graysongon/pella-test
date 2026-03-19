@@ -2,10 +2,10 @@ name: Pella-Auto-Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 */6 * * *' # 每6小时运行一次
+    - cron: '0 */6 * * *' # 每6小时运行一次，确保时长不中断
 
 jobs:
-  renew:
+  renew_job:
     runs-on: ubuntu-latest
     steps:
       - name: 📥 Checkout
@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: 🛡️ Setup Proxy
+      - name: 🛡️ Setup Proxy (Gost)
         run: |
           wget https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
           gunzip gost-linux-amd64-2.11.5.gz
@@ -24,23 +24,24 @@ jobs:
           nohup ./gost-linux-amd64-2.11.5 -L http://:8080 -F ${{ secrets.GOST_PROXY }} > /dev/null 2>&1 &
           sleep 3
 
-      - name: 🛠️ Install Dependencies
+      - name: 🛠️ Install Chrome and Dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable xvfb xdotool
           pip install seleniumbase
           seleniumbase install uc_driver
 
-      - name: 🚀 Run Script
+      - name: 🚀 Run Renewal Script
         env:
           PELLA_ACCOUNT: ${{ secrets.PELLA_ACCOUNT }}
+          KERIT_ACCOUNT: ${{ secrets.KERIT_ACCOUNT }}
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python pella_renew.py
 
-      - name: 📸 Upload Debug Logs (Screenshots)
+      - name: 📸 Upload Screenshots (Debug)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pella-screenshots
+          name: pella-debug-screenshots
           path: "*.png"
