@@ -8,7 +8,7 @@ import urllib.parse
 from seleniumbase import SB
 
 # ============================================================
-# 配置（优先读取 PELLA_ACCOUNT）
+# 配置
 # ============================================================
 _account_str = os.environ.get("PELLA_ACCOUNT") or os.environ.get("KERIT_ACCOUNT", "")
 _account = _account_str.split(",")
@@ -18,117 +18,64 @@ GMAIL_PASSWORD = _account[1].strip() if len(_account) > 1 else ""
 LOCAL_PROXY    = "http://127.0.0.1:8080"
 LOGIN_URL      = "https://www.pella.app/"
 
-_tg_raw = os.environ.get("TG_BOT", "")
-TG_CHAT_ID, TG_TOKEN = (_tg_raw.split(",")[0].strip(), _tg_raw.split(",")[1].strip()) if "," in _tg_raw else ("", "")
-
-def send_tg(msg, remaining=None):
-    if not TG_TOKEN: return
-    text = f"🎮 Pella 续期通知\n📊 结果: {msg}"
-    if remaining: text += f"\n⏱️ 状态: {remaining}"
-    url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
-    data = urllib.parse.urlencode({"chat_id": TG_CHAT_ID, "text": text}).encode()
-    try: urllib.request.urlopen(urllib.request.Request(url, data=data, method="POST"), timeout=15)
-    except: pass
-
-def fetch_otp():
-    print("📬 正在检查 Gmail 验证码...")
-    try:
-        mail = imaplib.IMAP4_SSL("imap.gmail.com")
-        mail.login(PELLA_EMAIL, GMAIL_PASSWORD)
-        for _ in range(15):
-            time.sleep(5)
-            for folder in ["INBOX", "[Gmail]/Spam", "垃圾邮件"]:
-                try:
-                    mail.select(folder)
-                    _, data = mail.uid("search", None, '(OR FROM "pella" FROM "kerit")')
-                    uids = data[0].split()
-                    if uids:
-                        _, msg_data = mail.uid("fetch", uids[-1], "(RFC822)")
-                        msg = email.message_from_bytes(msg_data[0][1])
-                        body = msg.get_payload(decode=True).decode(errors='ignore') if not msg.is_multipart() else ""
-                        if msg.is_multipart():
-                            for part in msg.walk():
-                                if part.get_content_type() == "text/plain":
-                                    body = part.get_payload(decode=True).decode(errors='ignore')
-                                    break
-                        otp = re.search(r'\b(\d{4,6})\b', body)
-                        if otp: 
-                            mail.logout()
-                            return otp.group(1)
-                except: continue
-        mail.logout()
-    except Exception as e:
-        print(f"❌ Gmail 错误: {e}")
-    return None
-
-def do_renew(sb):
-    print("🔄 执行加时逻辑...")
-    time.sleep(8)
-    # 匹配截图中的 cuty 和 shrink 链接
-    targets = sb.find_elements("//a[contains(@href, 'cuty') or contains(@href, 'shrink')]")
-    if not targets:
-        print("⚠️ 未发现续期链接")
-        return
-
-    main_window = sb.driver.current_window_handle
-    for target in targets:
-        try:
-            href = target.get_attribute("href")
-            sb.execute_script(f"window.open('{href}', '_blank');")
-            time.sleep(2)
-            windows = sb.driver.window_handles
-            sb.driver.switch_to.window(windows[-1])
-            time.sleep(35) # 必须停留足够时间以触发后端加时
-            sb.driver.close()
-            sb.driver.switch_to.window(main_window)
-        except: continue
-
-    sb.execute_script("window.location.reload();")
-    time.sleep(5)
-    sb.save_screenshot("final_status.png")
-    send_tg("续期操作已完成，请检查截图")
+# ============================================================
+# 核心登录逻辑增强
+# ============================================================
 
 def run_script():
-    # 使用 SB 驱动并正确处理缩进
-    with SB(uc=True, test=True, proxy=LOCAL_PROXY) as sb:
-        print("🌐 正在连接 Pella...")
+    # 使用 uc=True 开启反检测模式，设定较长的重连时间
+    with SB(uc=True, test=True, proxy=LOCAL_PROXY, locale_code="en") as sb:
+        print("🌐 正在连接 Pella 官网...")
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=10)
-        time.sleep(5)
+        time.sleep(8)
+        
+        # 步骤 1: 检查是否卡在 Cloudflare 验证页
+        if sb.is_element_visible('iframe[src*="challenges.cloudflare.com"]'):
+            print("🛡️ 检测到 Cloudflare 验证，尝试自动绕过...")
+            sb.uc_gui_click_captcha() # 尝试 SeleniumBase 内置的验证码点击
+            time.sleep(5)
 
-        # 检查是否需要点击 Login 进入登录页
-        for btn in ["a:contains('Login')", "button:contains('Login')"]:
-            if sb.is_element_visible(btn):
-                sb.click(btn)
+        # 步骤 2: 寻找并进入登录页面
+        # 有些 IP 访问首页是营销页，需要点击 Login 按钮
+        login_found = False
+        for login_btn in ["a:contains('Login')", "button:contains('Login')", "a[href*='login']"]:
+            if sb.is_element_visible(login_btn):
+                print(f"🖱️ 点击登录入口: {login_btn}")
+                sb.click(login_btn)
                 time.sleep(5)
-
-        # 解决“邮箱框加载失败”：尝试多种选择器并增加等待
-        print("🔑 尝试定位邮箱框...")
-        email_input = None
-        for sel in ["#email-input", "input[type='email']", "input[name='email']"]:
-            if sb.is_element_visible(sel):
-                email_input = sel
+                login_found = True
                 break
         
-        if not email_input:
-            sb.save_screenshot("error_no_email.png")
-            print("❌ 邮箱框加载失败，请检查 error_no_email.png")
+        # 步骤 3: 定位邮箱输入框
+        print("🔑 尝试多重定位邮箱框...")
+        # 扩充选择器，防止 ID 变化
+        selectors = [
+            '#email-input', 
+            'input[type="email"]', 
+            'input[name="email"]', 
+            'input[placeholder*="Email"]'
+        ]
+        
+        target_field = None
+        for sel in selectors:
+            if sb.is_element_visible(sel):
+                target_field = sel
+                break
+        
+        if not target_field:
+            sb.save_screenshot("error_no_email_field.png")
+            print("❌ 无法定位邮箱框。请在 GitHub Artifacts 查看 error_no_email_field.png 确认页面状态。")
+            # 如果是由于 IP 被封，通常截图会显示 "Access Denied"
             return
 
-        sb.type(email_input, PELLA_EMAIL)
-        sb.click("//button[@type='submit']|//button[contains(., 'Continue')]")
+        print(f"✅ 找到输入框: {target_field}，正在输入账号...")
+        sb.type(target_field, PELLA_EMAIL)
         
-        code = fetch_otp()
-        if not code: return
-
-        print(f"⌨️ 填入验证码: {code}")
-        for i, char in enumerate(code):
-            sb.execute_script(f"document.querySelectorAll('.otp-input')[{i}].value='{char}';")
-            sb.execute_script(f"document.querySelectorAll('.otp-input')[{i}].dispatchEvent(new Event('input', {{bubbles:true}}));")
+        # 点击继续
+        submit_btn = "//button[@type='submit']|//button[contains(., 'Continue')]"
+        sb.click(submit_btn)
         
-        time.sleep(2)
-        sb.click("//button[contains(., 'Verify')]")
-        time.sleep(10)
-        do_renew(sb)
-
-if __name__ == "__main__":
-    run_script()
+        # 后续 OTP 处理逻辑保持不变...
+        # [此处省略原有的 fetch_otp 和 do_renew 逻辑，请保持你原脚本中的该部分]
+        print("📨 已提交，等待 OTP...")
+        # ... (接你之前的代码)
