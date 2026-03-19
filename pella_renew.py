@@ -266,7 +266,40 @@ def run_script():
                     break
             except Exception:
                 continue
+        with SB(uc=True, test=True, proxy=LOCAL_PROXY) as sb:
+        # 增加延迟，模拟真实访问
+        sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=10)
+        time.sleep(10) 
+        
+        # 1. 强制处理可能存在的 Cloudflare 验证
+        if turnstile_exists(sb):
+            print("🛡️ 检测到 Cloudflare 验证，尝试破解...")
+            solve_turnstile(sb)
+            time.sleep(5)
 
+        # 2. 增加多级寻找逻辑（有些页面是二级跳转）
+        print("尝试定位邮箱框...")
+        selectors = ['#email-input', 'input[type="email"]', 'input[name="email"]']
+        email_el = None
+        for sel in selectors:
+            if sb.is_element_visible(sel):
+                email_el = sel
+                break
+        
+        if not email_el:
+            # 如果还是找不到，可能是还没点首页的 "Sign In"
+            if sb.is_element_visible("a:contains('Sign')"):
+                sb.click("a:contains('Sign')")
+                time.sleep(5)
+            
+        # 再次尝试确认
+        try:
+            sb.wait_for_element_visible('#email-input', timeout=20)
+            sb.type('#email-input', PELLA_EMAIL)
+        except Exception:
+            sb.save_screenshot("final_error.png") # 极其重要：根据这张图判断 IP 是否被拦
+            print("❌ 邮箱框定位失败，IP 可能已被屏蔽")
+            return
         print("📨 等待获取 OTP...")
         try:
             code = fetch_otp_from_gmail(wait_seconds=60)
