@@ -1,43 +1,46 @@
-name: Pella-Renew
+name: Pella-Auto-Renew
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 1 */6 * *'
+    - cron: '0 */6 * * *' # 每6小时运行一次
+
 jobs:
-  run_pella_login:
+  renew:
     runs-on: ubuntu-latest
     steps:
-      - name: 📥 下载公库代码
+      - name: 📥 Checkout
         uses: actions/checkout@v4
-      - name: 🐍 设置 Python
+
+      - name: 🐍 Setup Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-    
-      - name: 🛠️ 安装系统依赖
+
+      - name: 🛡️ Setup Proxy
+        run: |
+          wget https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+          gunzip gost-linux-amd64-2.11.5.gz
+          chmod +x gost-linux-amd64-2.11.5
+          nohup ./gost-linux-amd64-2.11.5 -L http://:8080 -F ${{ secrets.GOST_PROXY }} > /dev/null 2>&1 &
+          sleep 3
+
+      - name: 🛠️ Install Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            google-chrome-stable \
-            xvfb \
-            x11-utils \
-            xdotool \
-            scrot
-      - name: 🐍 安装 Python 依赖
-        run: |
+          sudo apt-get install -y google-chrome-stable xvfb xdotool
           pip install seleniumbase
           seleniumbase install uc_driver
-      - name: 🚀 运行脚本
+
+      - name: 🚀 Run Script
         env:
-          PYTHONIOENCODING: utf-8
           PELLA_ACCOUNT: ${{ secrets.PELLA_ACCOUNT }}
-          GOST_PROXY: ${{ secrets.GOST_PROXY }}
           TG_BOT: ${{ secrets.TG_BOT }}
         run: |
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python pella_renew.py
-      - name: 📸 上传截图
+
+      - name: 📸 Upload Artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots
+          name: pella-debug-logs
           path: "*.png"
