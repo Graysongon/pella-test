@@ -1,46 +1,57 @@
-name: Pella-Renew-Full
+name: Pella-Auto-Renew
+
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 支持手动触发
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *' # 每6小时自动运行一次，确保时长充足
 
 jobs:
-  renew:
+  pella_renew_job:
     runs-on: ubuntu-latest
+    
     steps:
-      - name: 📥 Checkout
+      - name: 📥 检出代码
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v4
+      - name: 🐍 设置 Python 环境
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
-      - name: 🛡️ Setup Proxy
+      - name: 🛡️ 启动 Gost 代理转发
+        # 脚本中定义了 LOCAL_PROXY = "http://127.0.0.1:8080"
+        # 此步骤通过 Gost 将本地 8080 流量转发至您的私人代理
         run: |
           wget https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
           gunzip gost-linux-amd64-2.11.5.gz
           chmod +x gost-linux-amd64-2.11.5
           nohup ./gost-linux-amd64-2.11.5 -L http://:8080 -F ${{ secrets.GOST_PROXY }} > /dev/null 2>&1 &
           sleep 5
+          echo "✅ 代理隧道已建立"
 
-      - name: 🛠️ Install Deps
+      - name: 🛠️ 安装系统依赖与浏览器
         run: |
           sudo apt-get update
           sudo apt-get install -y google-chrome-stable xvfb xdotool
           pip install seleniumbase
           seleniumbase install uc_driver
+          echo "✅ 环境依赖安装完成"
 
-      - name: 🚀 Run
+      - name: 🚀 执行 Pella 续期脚本
         env:
+          # 脚本会优先读取 PELLA_ACCOUNT，兼容 KERIT_ACCOUNT
           PELLA_ACCOUNT: ${{ secrets.PELLA_ACCOUNT }}
-          TG_BOT: ${{ secrets.TG_BOT }}
+          KERIT_ACCOUNT: ${{ secrets.KERIT_ACCOUNT }}
+          TG_BOT: ${{ secrets.TG_BOT }} # 格式：CHAT_ID,TOKEN
+          PYTHONIOENCODING: utf-8
         run: |
+          # 使用 xvfb 虚拟显示器运行，以支持浏览器无头模式下的物理坐标点击
           xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" python pella_renew.py
 
-      - name: 📸 Upload Artifacts
+      - name: 📸 上传调试截图
+        # 无论脚本是否成功，都上传截图以便排查登录或点击问题
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: debug-screenshots
+          name: pella-debug-screenshots
           path: "*.png"
