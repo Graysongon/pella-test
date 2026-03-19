@@ -3,13 +3,12 @@ import time
 import imaplib
 import email
 import re
-import subprocess
 import urllib.request
 import urllib.parse
 from seleniumbase import SB
 
 # ============================================================
-# 配置（从环境变量读取）
+# 配置（优先读取 PELLA_ACCOUNT）
 # ============================================================
 _account_str = os.environ.get("PELLA_ACCOUNT") or os.environ.get("KERIT_ACCOUNT", "")
 _account = _account_str.split(",")
@@ -46,14 +45,12 @@ def fetch_otp():
                     if uids:
                         _, msg_data = mail.uid("fetch", uids[-1], "(RFC822)")
                         msg = email.message_from_bytes(msg_data[0][1])
-                        body = ""
+                        body = msg.get_payload(decode=True).decode(errors='ignore') if not msg.is_multipart() else ""
                         if msg.is_multipart():
                             for part in msg.walk():
                                 if part.get_content_type() == "text/plain":
                                     body = part.get_payload(decode=True).decode(errors='ignore')
                                     break
-                        else:
-                            body = msg.get_payload(decode=True).decode(errors='ignore')
                         otp = re.search(r'\b(\d{4,6})\b', body)
                         if otp: 
                             mail.logout()
@@ -65,54 +62,47 @@ def fetch_otp():
     return None
 
 def do_renew(sb):
-    print("🔄 开始执行加时逻辑...")
-    time.sleep(10)
-    sb.save_screenshot("dashboard_check.png")
-    
-    # 针对截图中的 Add 24/32 Hours 按钮进行匹配
-    targets = sb.find_elements("//a[contains(@href, 'cuty') or contains(@href, 'shrink') or contains(., 'Add')]")
-    
+    print("🔄 执行加时逻辑...")
+    time.sleep(8)
+    # 匹配截图中的 cuty 和 shrink 链接
+    targets = sb.find_elements("//a[contains(@href, 'cuty') or contains(@href, 'shrink')]")
     if not targets:
-        print("❌ 未发现续期按钮")
+        print("⚠️ 未发现续期链接")
         return
 
     main_window = sb.driver.current_window_handle
     for target in targets:
         try:
             href = target.get_attribute("href")
-            print(f"🔗 触发链接: {href}")
             sb.execute_script(f"window.open('{href}', '_blank');")
             time.sleep(2)
             windows = sb.driver.window_handles
-            if len(windows) > 1:
-                sb.driver.switch_to.window(windows[-1])
-                time.sleep(35) # 模拟广告停留
-                sb.driver.close()
-                sb.driver.switch_to.window(main_window)
+            sb.driver.switch_to.window(windows[-1])
+            time.sleep(35) # 必须停留足够时间以触发后端加时
+            sb.driver.close()
+            sb.driver.switch_to.window(main_window)
         except: continue
 
     sb.execute_script("window.location.reload();")
     time.sleep(5)
-    try:
-        rem = sb.get_text("//div[contains(., 'Hours')]")
-        send_tg("已尝试触发所有续期链接", rem)
-    except:
-        send_tg("续期操作完成，请检查面板")
+    sb.save_screenshot("final_status.png")
+    send_tg("续期操作已完成，请检查截图")
 
 def run_script():
+    # 使用 SB 驱动并正确处理缩进
     with SB(uc=True, test=True, proxy=LOCAL_PROXY) as sb:
         print("🌐 正在连接 Pella...")
         sb.uc_open_with_reconnect(LOGIN_URL, reconnect_time=10)
         time.sleep(5)
 
-        # 解决“找不到邮箱框”：先尝试寻找并点击登录入口
-        for login_sel in ["a:contains('Login')", "button:contains('Login')", "a[href*='login']"]:
-            if sb.is_element_visible(login_sel):
-                sb.click(login_sel)
+        # 检查是否需要点击 Login 进入登录页
+        for btn in ["a:contains('Login')", "button:contains('Login')"]:
+            if sb.is_element_visible(btn):
+                sb.click(btn)
                 time.sleep(5)
-                break
 
-        # 定位邮箱框（多选择器适配）
+        # 解决“邮箱框加载失败”：尝试多种选择器并增加等待
+        print("🔑 尝试定位邮箱框...")
         email_input = None
         for sel in ["#email-input", "input[type='email']", "input[name='email']"]:
             if sb.is_element_visible(sel):
@@ -121,18 +111,14 @@ def run_script():
         
         if not email_input:
             sb.save_screenshot("error_no_email.png")
-            print("❌ 邮箱框加载失败")
+            print("❌ 邮箱框加载失败，请检查 error_no_email.png")
             return
 
-        print("🔑 填写账号...")
         sb.type(email_input, PELLA_EMAIL)
         sb.click("//button[@type='submit']|//button[contains(., 'Continue')]")
         
-        print("📨 获取验证码...")
         code = fetch_otp()
-        if not code:
-            print("❌ 验证码获取超时")
-            return
+        if not code: return
 
         print(f"⌨️ 填入验证码: {code}")
         for i, char in enumerate(code):
@@ -140,9 +126,8 @@ def run_script():
             sb.execute_script(f"document.querySelectorAll('.otp-input')[{i}].dispatchEvent(new Event('input', {{bubbles:true}}));")
         
         time.sleep(2)
-        sb.click("//button[contains(., 'Verify')]|//button[contains(., 'Submit')]")
+        sb.click("//button[contains(., 'Verify')]")
         time.sleep(10)
-        
         do_renew(sb)
 
 if __name__ == "__main__":
